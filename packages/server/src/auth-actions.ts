@@ -36,8 +36,15 @@ export async function signInAction(_prev: ActionResult, data: FormData): Promise
   redirect(state.status === "ok" ? "/" : "/mfa");
 }
 
-/** Start TOTP enrollment (removes abandoned unverified factors first). */
+/**
+ * Start TOTP enrollment (removes abandoned unverified factors first).
+ * Called ONCE from the client when the enrollment screen mounts — never during
+ * server rendering, otherwise every re-render would replace the QR the user
+ * already scanned.
+ */
 export async function startMfaEnrollment() {
+  const state = await getAuthState();
+  if (state.status !== "mfa_enroll") throw new Error("Enrollment not required");
   const supabase = await createSupabase();
   const { data: factors } = await supabase.auth.mfa.listFactors();
   for (const f of factors?.all ?? []) {

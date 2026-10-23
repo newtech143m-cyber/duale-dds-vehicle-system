@@ -16,23 +16,24 @@
     "@dds/auth": "workspace:*",
     "@dds/database": "workspace:*",
     "@dds/domain": "workspace:*",
+    "@dds/i18n": "workspace:*",
+    "@dds/ui": "workspace:*",
     "@dds/validation": "workspace:*",
     "@supabase/ssr": "^0.12.7",
     "@supabase/supabase-js": "^2.118.0",
     "@vercel/blob": "^2.8.2",
+    "lucide-react": "^1.61.0",
     "react": "19.3.1",
     "server-only": "^0.0.1",
-    "zod": "^4.6.7",
-    "@dds/i18n": "workspace:*",
-    "@dds/ui": "workspace:*"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
     "@types/react": "^19.3.0",
-    "next": "16.4.2",
-    "typescript": "~5.9.3",
-    "vitest": "^5.0.5",
     "@types/react-dom": "^19.3.0",
-    "react-dom": "19.3.1"
+    "next": "16.4.2",
+    "react-dom": "19.3.1",
+    "typescript": "~5.9.3",
+    "vitest": "^5.0.5"
   }
 }
