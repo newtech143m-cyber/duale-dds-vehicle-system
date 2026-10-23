@@ -110,7 +110,51 @@ describe("audit log", () => {
 
 describe("search", () => {
   it("fuzzy owner-name search finds near matches", async () => {
-    const r = await db.query<{ full_legal_name: string }>(`SELECT full_legal_name FROM owners WHERE search_name % 'ahmad ali'`);
+    const r = await db.query<{ full_legal_name: string }>(
+      `SELECT full_legal_name FROM owners WHERE search_name OPERATOR(extensions.%) 'ahmad ali'`,
+    );
     expect(r.rows.map((x) => x.full_legal_name)).toContain("Ahmed Ali");
+  });
+});
+
+describe("access roles & row level security", () => {
+  const asRole = async <T>(role: string, sql: string) => {
+    await db.exec(`SET ROLE ${role}`);
+    try {
+      return await db.query<T>(sql);
+    } finally {
+      await db.exec(`RESET ROLE`);
+    }
+  };
+
+  it("RLS is enabled on every table", async () => {
+    const r = await db.query<{ tablename: string }>(
+      `SELECT c.relname AS tablename FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = 'public' AND c.relkind = 'r' AND NOT c.relrowsecurity`,
+    );
+    expect(r.rows).toEqual([]);
+  });
+
+  it("a role without a policy (like Supabase anon) sees no rows even with SELECT", async () => {
+    await db.exec(`CREATE ROLE test_anon NOLOGIN; GRANT USAGE ON SCHEMA public TO test_anon; GRANT SELECT ON owners TO test_anon;`);
+    const r = await asRole<{ n: number }>("test_anon", `SELECT count(*)::int AS n FROM owners`);
+    expect(r.rows[0]!.n).toBe(0);
+  });
+
+  it("dds_app can read and write but still cannot hard-delete financial rows", async () => {
+    const r = await asRole<{ n: number }>("dds_app", `SELECT count(*)::int AS n FROM owners`);
+    expect(r.rows[0]!.n).toBeGreaterThan(0);
+    await expect(asRole("dds_app", `DELETE FROM tax_payments`)).rejects.toThrow(/permission denied|not allowed/);
+  });
+
+  it("dds_verifier can read and log searches but cannot edit records", async () => {
+    await expect(asRole("dds_verifier", `SELECT count(*) FROM vehicles`)).resolves.toBeDefined();
+    await expect(
+      asRole("dds_verifier", `INSERT INTO verification_events (id, reference, officer_id, plate_query, plate_normalized, statuses)
+                              VALUES ('${id(40)}','VER-T-1','${id(9)}','3-aa 12345','3-AA12345','{VERIFIED}')`),
+    ).resolves.toBeDefined();
+    await expect(asRole("dds_verifier", `UPDATE vehicles SET color='Red'`)).rejects.toThrow(/permission denied/);
+    await expect(asRole("dds_verifier", `INSERT INTO tax_payments (id, payment_reference, vehicle_id, office_id, amount, method, paid_at, collected_by)
+      VALUES ('${id(41)}','X','${id(4)}','${id(1)}',1,'CASH',now(),'${id(9)}')`)).rejects.toThrow(/permission denied/);
   });
 });

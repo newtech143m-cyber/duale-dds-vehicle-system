@@ -1,8 +1,8 @@
 import "dotenv/config";
 import { defineConfig } from "prisma/config";
 
-// Migrations use the DIRECT (non-pooled) Neon connection.
-// The runtime client uses the pooled DATABASE_URL via the Neon adapter (src/client.ts).
+// Migrations use the Supabase SESSION pooler (port 5432) or direct connection.
+// The runtime client uses the transaction-pooled DATABASE_URL via adapter-pg (src/client.ts).
 export default defineConfig({
   schema: "prisma/schema.prisma",
   migrations: {

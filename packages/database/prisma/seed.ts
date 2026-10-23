@@ -13,13 +13,13 @@
  * Safe to re-run (upserts).
  */
 import "dotenv/config";
-import { PrismaNeon } from "@prisma/adapter-neon";
+import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "../src/generated/prisma/client";
 import { PERMISSIONS, ROLES, ROLE_PERMISSIONS, type RoleCode } from "@dds/auth";
 
 const url = process.env.DIRECT_DATABASE_URL ?? process.env.DATABASE_URL;
 if (!url) throw new Error("Set DIRECT_DATABASE_URL (or DATABASE_URL) before seeding.");
-const prisma = new PrismaClient({ adapter: new PrismaNeon({ connectionString: url }) });
+const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: url }) });
 
 async function seedAccessControl() {
   for (const [code, p] of Object.entries(PERMISSIONS)) {

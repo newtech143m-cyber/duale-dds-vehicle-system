@@ -3,7 +3,9 @@
 -- Hand-written; keep in sync with docs/database.md.
 -- =====================================================================
 
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
+-- Extensions live in their own schema (Supabase convention; keeps public clean).
+CREATE SCHEMA IF NOT EXISTS extensions;
+CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA extensions;
 
 -- ---------------------------------------------------------------------
 -- 1. Uniqueness among NON-archived records
@@ -42,8 +44,8 @@ CREATE UNIQUE INDEX "user_roles_active_uq"
 -- ---------------------------------------------------------------------
 -- 2. Fuzzy search indexes (registration portal search box)
 -- ---------------------------------------------------------------------
-CREATE INDEX "owners_search_name_trgm" ON "owners" USING gin ("search_name" gin_trgm_ops);
-CREATE INDEX "vehicles_plate_trgm" ON "vehicles" USING gin ("plate_normalized" gin_trgm_ops);
+CREATE INDEX "owners_search_name_trgm" ON "owners" USING gin ("search_name" extensions.gin_trgm_ops);
+CREATE INDEX "vehicles_plate_trgm" ON "vehicles" USING gin ("plate_normalized" extensions.gin_trgm_ops);
 
 -- ---------------------------------------------------------------------
 -- 3. CHECK constraints
@@ -188,9 +190,9 @@ CREATE TRIGGER payment_allocations_cap BEFORE INSERT ON "payment_allocations"
   FOR EACH ROW EXECUTE FUNCTION dds_allocation_cap();
 
 -- ---------------------------------------------------------------------
--- 6. Least-privilege DB role for the VERIFICATION portal (optional but recommended).
---    Create a login for it in Neon and GRANT this role; give its connection
---    string to the verification Vercel project instead of the owner role.
+-- 6. Least-privilege DB role for the VERIFICATION portal.
+--    A login role that is a member of dds_verifier is created outside migrations;
+--    its connection string goes to the verification Vercel project only.
 -- ---------------------------------------------------------------------
 DO $$
 BEGIN
