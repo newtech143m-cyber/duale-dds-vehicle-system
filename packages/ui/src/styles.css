@@ -1,0 +1,52 @@
+/* Shared design tokens for both portals (Tailwind v4 theme). */
+@theme {
+  --font-sans: "Inter", "Noto Sans Ethiopic", "Nyala", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+  --color-navy-950: #071226;
+  --color-navy-900: #0b1b36;
+  --color-navy-800: #12284d;
+  --color-navy-700: #1b3766;
+  --color-navy-600: #284a82;
+  --color-navy-100: #e6ecf5;
+  --color-navy-50: #f3f6fb;
+
+  --color-teal-700: #0b6b6b;
+  --color-teal-600: #0e7f7f;
+  --color-teal-500: #129a9a;
+  --color-teal-100: #d6f1f0;
+  --color-teal-50: #edf9f8;
+
+  --color-surface: #f5f7fa;
+  --color-line: #e3e8ef;
+  --color-ink: #0f172a;
+  --color-muted: #5b6678;
+
+  --color-ok-700: #166534;
+  --color-ok-50: #ecfdf3;
+  --color-warn-800: #92400e;
+  --color-warn-50: #fffbeb;
+  --color-bad-700: #b42318;
+  --color-bad-50: #fef3f2;
+  --color-info-700: #1d4ed8;
+  --color-info-50: #eff6ff;
+
+  --radius-card: 14px;
+  --shadow-card: 0 1px 2px rgb(15 23 42 / 0.04), 0 4px 16px rgb(15 23 42 / 0.05);
+}
+
+@layer base {
+  html { -webkit-text-size-adjust: 100%; }
+  body { @apply bg-surface text-ink antialiased; font-feature-settings: "cv11", "ss01"; }
+  :focus-visible { outline: 3px solid var(--color-teal-500); outline-offset: 2px; border-radius: 6px; }
+  input, select, textarea { font: inherit; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+@media print {
+  .no-print { display: none !important; }
+  body { background: #fff; }
+  .print-card { box-shadow: none !important; border: 1px solid #cbd5e1 !important; }
+}

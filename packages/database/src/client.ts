@@ -27,8 +27,19 @@ function createClient(): PrismaClient {
   });
 }
 
-export const prisma: PrismaClient = globalForPrisma.__ddsPrisma ?? createClient();
-
-if (process.env.NODE_ENV !== "production") {
-  globalForPrisma.__ddsPrisma = prisma;
+function getClient(): PrismaClient {
+  if (!globalForPrisma.__ddsPrisma) globalForPrisma.__ddsPrisma = createClient();
+  return globalForPrisma.__ddsPrisma;
 }
+
+/**
+ * Lazily-created client: importing this module never opens a connection or
+ * requires DATABASE_URL (so `next build` works without database access).
+ */
+export const prisma: PrismaClient = new Proxy({} as PrismaClient, {
+  get(_target, prop) {
+    const client = getClient();
+    const value = Reflect.get(client, prop, client);
+    return typeof value === "function" ? value.bind(client) : value;
+  },
+});
