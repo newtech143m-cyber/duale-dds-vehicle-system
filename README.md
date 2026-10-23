@@ -13,16 +13,14 @@ Two independently deployable Next.js applications sharing one protected Supabase
 
 ---
 
-## Build status
+## Live
 
-| Stage | Status |
+| Portal | URL |
 |---|---|
-| 1. Architecture, database schema, migrations, seed | ✅ Done |
-| 2. Shared domain logic (plate normalization, tax status, verification statuses, RBAC matrix) | ✅ Done, unit-tested |
-| 3. Authentication (Supabase) + server-side authorization | ⏳ Next |
-| 4–7. Registration portal, CRUD, uploads, tax module | ⏳ |
-| 8–9. Verification portal | ⏳ |
-| 10–14. Reports, localization, animations, E2E tests, deployment | ⏳ |
+| Registration (office staff) | https://dds-registration-portal.vercel.app |
+| Verification (police) | https://dds-verification-portal.vercel.app |
+
+Both are separate Vercel projects deployed from this monorepo (root directories `apps/registration-portal` and `apps/verification-portal`). Vercel Authentication protects **preview** deployments only; production is protected by Supabase sign-in, role checks and MFA.
 
 ---
 
@@ -85,4 +83,39 @@ Supabase takes daily backups (Point-in-Time Recovery is a paid add-on). Before e
 
 ---
 
-Deployment instructions for both Vercel projects will be completed with the portals (stages 3–9).
+## Deployment (Vercel)
+
+Each portal is its own Vercel project linked to this repository.
+
+| Setting | Registration | Verification |
+|---|---|---|
+| Root directory | `apps/registration-portal` | `apps/verification-portal` |
+| Build / install | from `vercel.json` in the app folder | same |
+| `APP_PORTAL` | `registration` | `verification` |
+| `DATABASE_URL` | transaction pooler, role `dds_registration_login` | transaction pooler, role `dds_verification_login` |
+| `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | ✔ | ✔ |
+| `BLOB_READ_WRITE_TOKEN` | ✔ (linked Blob store) | ✔ if officers should see photos (link the same store) |
+| `OFFICE_TIMEZONE` | `Africa/Addis_Ababa` | same |
+
+`GET /api/health` on either portal reports database reachability (no data).
+
+### Adding staff
+1. Supabase → Authentication → Users → *Add user* (email + password, auto-confirm).
+2. Registration portal → *Staff & roles* → add the same email with roles.
+3. The account links on first sign-in. Admin, supervisor, finance and auditor roles must enrol an authenticator app (TOTP).
+
+### Database roles
+Login roles are created outside migrations (passwords never in git):
+```sql
+CREATE ROLE dds_registration_login LOGIN PASSWORD '…' IN ROLE dds_app;
+CREATE ROLE dds_verification_login LOGIN PASSWORD '…' IN ROLE dds_verifier;
+ALTER ROLE dds_registration_login SET search_path = public, extensions;
+ALTER ROLE dds_verification_login SET search_path = public, extensions;
+```
+Rotate a password with `ALTER ROLE … PASSWORD '…'` and update `DATABASE_URL` in that Vercel project.
+
+## Troubleshooting
+- **"This account is not registered as staff"** – the email exists in Supabase Auth but not in *Staff & roles*.
+- **Redirect loop to /mfa** – the role requires MFA; enrol with the QR code shown.
+- **503 from /api/health** – check `DATABASE_URL` (pooler host, port 6543, role name `role.project-ref`).
+- **Photos not shown in verification portal** – connect the Blob store to that Vercel project too.

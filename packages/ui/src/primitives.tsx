@@ -85,8 +85,8 @@ export function Table({ children, className }: { children: ReactNode; className?
 export function Th({ children, className }: { children?: ReactNode; className?: string }) {
   return <th className={cx("text-left font-medium text-muted text-xs uppercase tracking-wide px-4 py-3 border-b border-line bg-navy-50/60 whitespace-nowrap", className)}>{children}</th>;
 }
-export function Td({ children, className }: { children?: ReactNode; className?: string }) {
-  return <td className={cx("px-4 py-3 border-b border-line align-middle", className)}>{children}</td>;
+export function Td({ className, ...props }: ComponentProps<"td">) {
+  return <td className={cx("px-4 py-3 border-b border-line align-middle", className)} {...props} />;
 }
 
 export function EmptyState({ title, children }: { title: ReactNode; children?: ReactNode }) {

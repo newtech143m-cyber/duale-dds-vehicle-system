@@ -30,6 +30,7 @@ export async function signInAction(_prev: ActionResult, data: FormData): Promise
     return { ok: false, message: t(state.status === "suspended" ? "auth.suspended" : "auth.notStaff") };
   }
   if (state.status === "ok" || state.status === "mfa_enroll" || state.status === "mfa_verify") {
+    await prisma.user.update({ where: { id: state.staff.id }, data: { lastLoginAt: new Date() } }).catch(() => {});
     await audit({ actorId: state.staff.id, action: "auth.login", entityType: "user", entityId: state.staff.id });
   }
   redirect(state.status === "ok" ? "/" : "/mfa");
