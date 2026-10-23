@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PGPASSWORD: postgres
+      DIRECT_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/ci_migrations
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Prisma validate + generate
+        working-directory: packages/database
+        run: npx prisma validate && npx prisma generate
+
+      - name: Migration drift check (committed SQL == Prisma schema)
+        working-directory: packages/database
+        run: |
+          psql -h localhost -U postgres -c "CREATE DATABASE ci_expected" -c "CREATE DATABASE ci_actual" -c "CREATE DATABASE ci_migrations"
+          npx prisma migrate diff --from-empty --to-schema prisma/schema.prisma --script -o /tmp/expected.sql
+          psql -v ON_ERROR_STOP=1 -h localhost -U postgres -d ci_expected -f /tmp/expected.sql >/dev/null
+          psql -v ON_ERROR_STOP=1 -h localhost -U postgres -d ci_actual -f prisma/migrations/20261023000000_init/migration.sql >/dev/null
+          pg_dump -h localhost -U postgres --schema-only --no-owner ci_expected | grep -v '^--' | sort > /tmp/a.txt
+          pg_dump -h localhost -U postgres --schema-only --no-owner ci_actual   | grep -v '^--' | sort > /tmp/b.txt
+          diff /tmp/a.txt /tmp/b.txt && echo "No drift between schema.prisma and the init migration."
+
+      - name: Apply all migrations to a fresh Postgres
+        working-directory: packages/database
+        run: npx prisma migrate deploy
+
+      - run: pnpm -r --if-present typecheck
+      - run: pnpm -r --if-present test

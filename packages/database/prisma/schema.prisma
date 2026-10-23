@@ -1,0 +1,769 @@
+// =====================================================================
+// DDS Vehicle Registration, Verification & Tax Management System
+// Shared database schema (Neon Postgres) — used by BOTH portals.
+//
+// Conventions
+//  - UUID primary keys, snake_case tables/columns.
+//  - Timestamps stored in UTC (timestamptz). Display uses OFFICE_TIMEZONE.
+//  - Money: Decimal(14,2) — never floating point.
+//  - Nothing financial or registration-critical is hard-deleted:
+//    archive / cancel / reverse instead (enforced in the service layer
+//    and by DB triggers in migration 0002).
+//  - Partial unique indexes (e.g. one ACTIVE plate) live in SQL
+//    migration 0002 because Prisma cannot express them.
+// =====================================================================
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "esm"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  DISABLED
+}
+
+enum OwnerType {
+  INDIVIDUAL
+  BUSINESS
+}
+
+enum FuelType {
+  PETROL
+  DIESEL
+  ELECTRIC
+  HYBRID
+  LPG
+  OTHER
+}
+
+enum TransmissionType {
+  MANUAL
+  AUTOMATIC
+  OTHER
+}
+
+enum VehicleUsage {
+  PRIVATE
+  COMMERCIAL
+  PUBLIC_TRANSPORT
+  GOVERNMENT
+  NGO
+  DIPLOMATIC
+  OTHER
+}
+
+enum RecordStatus {
+  ACTIVE
+  UNDER_REVIEW
+  ARCHIVED
+}
+
+enum RegistrationStatus {
+  PENDING
+  ACTIVE
+  EXPIRED
+  SUSPENDED
+  CANCELLED
+}
+
+enum PhotoAngle {
+  PRIMARY
+  FRONT
+  REAR
+  LEFT
+  RIGHT
+  OTHER
+}
+
+enum DocumentType {
+  REGISTRATION_CERTIFICATE
+  INSPECTION_CERTIFICATE
+  INSURANCE
+  OWNERSHIP_TRANSFER
+  BUSINESS_LICENSE
+  OTHER
+}
+
+enum TaxRuleSource {
+  /// Entered by an administrator; NOT yet checked against an official regulation.
+  CONFIGURED
+  /// Checked against a cited official regulation (see legal_reference).
+  VERIFIED_OFFICIAL
+}
+
+enum PaymentMethod {
+  CASH
+  BANK_TRANSFER
+  MOBILE_MONEY
+  CHEQUE
+  OTHER
+}
+
+enum PaymentStatus {
+  POSTED
+  REVERSED
+}
+
+enum InspectionResult {
+  PASS
+  CONDITIONAL
+  FAIL
+}
+
+enum ReviewSource {
+  VERIFICATION_PORTAL
+  REGISTRATION_PORTAL
+  SYSTEM
+}
+
+enum ReviewStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  REJECTED
+}
+
+enum Portal {
+  REGISTRATION
+  VERIFICATION
+  SYSTEM
+}
+
+// ---------------------------------------------------------------------
+// Identity & access control
+// ---------------------------------------------------------------------
+
+/// Staff account. Identity (password, MFA, reset) is handled by Supabase Auth;
+/// this row holds authorization data. auth_user_id = Supabase auth.users.id.
+model User {
+  id           String     @id @default(uuid()) @db.Uuid
+  authUserId   String     @unique @map("auth_user_id") @db.Uuid
+  email        String     @unique @db.VarChar(254)
+  fullName     String     @map("full_name") @db.VarChar(200)
+  staffNumber  String?    @unique @map("staff_number") @db.VarChar(50)
+  phone        String?    @db.VarChar(30)
+  officeId     String?    @map("office_id") @db.Uuid
+  status       UserStatus @default(ACTIVE)
+  /// Administrative roles must have MFA (AAL2) — enforced at sign-in.
+  mfaRequired  Boolean    @default(false) @map("mfa_required")
+  locale       String     @default("so") @db.VarChar(5)
+  lastLoginAt  DateTime?  @map("last_login_at") @db.Timestamptz(3)
+  suspendedAt  DateTime?  @map("suspended_at") @db.Timestamptz(3)
+  suspendedReason String? @map("suspended_reason") @db.VarChar(500)
+  createdAt    DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
+  createdById  String?    @map("created_by") @db.Uuid
+  updatedById  String?    @map("updated_by") @db.Uuid
+
+  office       RegistrationOffice? @relation("OfficeStaff", fields: [officeId], references: [id])
+  roles        UserRole[]          @relation("UserRoles")
+  rolesGranted UserRole[]          @relation("RoleGrantedBy")
+
+  @@index([officeId])
+  @@index([status])
+  @@map("users")
+}
+
+model Role {
+  id          String   @id @default(uuid()) @db.Uuid
+  /// SUPER_ADMIN, REGISTRATION_OFFICER, SUPERVISOR, FINANCE_OFFICER, VERIFICATION_OFFICER, AUDITOR
+  code        String   @unique @db.VarChar(50)
+  name        String   @db.VarChar(100)
+  description String?  @db.VarChar(500)
+  isSystem    Boolean  @default(false) @map("is_system")
+  /// Administrative roles require MFA.
+  requiresMfa Boolean  @default(false) @map("requires_mfa")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  permissions RolePermission[]
+  users       UserRole[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String  @id @default(uuid()) @db.Uuid
+  /// e.g. vehicle.create, tax.payment.record, verify.view.owner_contact
+  code        String  @unique @db.VarChar(80)
+  description String? @db.VarChar(300)
+  /// Grouping for the admin UI.
+  module      String  @db.VarChar(40)
+
+  roles RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String @map("role_id") @db.Uuid
+  permissionId String @map("permission_id") @db.Uuid
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model UserRole {
+  id          String    @id @default(uuid()) @db.Uuid
+  userId      String    @map("user_id") @db.Uuid
+  roleId      String    @map("role_id") @db.Uuid
+  /// Optional scope: role applies only to records of this office.
+  officeId    String?   @map("office_id") @db.Uuid
+  grantedById String?   @map("granted_by") @db.Uuid
+  grantedAt   DateTime  @default(now()) @map("granted_at") @db.Timestamptz(3)
+  revokedAt   DateTime? @map("revoked_at") @db.Timestamptz(3)
+
+  user      User                @relation("UserRoles", fields: [userId], references: [id], onDelete: Cascade)
+  role      Role                @relation(fields: [roleId], references: [id])
+  office    RegistrationOffice? @relation(fields: [officeId], references: [id])
+  grantedBy User?               @relation("RoleGrantedBy", fields: [grantedById], references: [id])
+
+  @@index([userId])
+  @@index([roleId])
+  @@map("user_roles")
+}
+
+// ---------------------------------------------------------------------
+// Reference data
+// ---------------------------------------------------------------------
+
+model RegistrationOffice {
+  id        String    @id @default(uuid()) @db.Uuid
+  code      String    @unique @db.VarChar(20)
+  name      String    @db.VarChar(200)
+  region    String    @db.VarChar(100)
+  zone      String?   @db.VarChar(100)
+  woreda    String?   @db.VarChar(100)
+  address   String?   @db.VarChar(300)
+  phone     String?   @db.VarChar(30)
+  isActive  Boolean   @default(true) @map("is_active")
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+  createdById String? @map("created_by") @db.Uuid
+  updatedById String? @map("updated_by") @db.Uuid
+
+  staff         User[]          @relation("OfficeStaff")
+  userRoles     UserRole[]
+  vehicles      Vehicle[]
+  registrations Registration[]
+  payments      TaxPayment[]
+
+  @@map("registration_offices")
+}
+
+model VehicleCategory {
+  id          String   @id @default(uuid()) @db.Uuid
+  code        String   @unique @db.VarChar(30)
+  name        String   @db.VarChar(100)
+  description String?  @db.VarChar(300)
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  createdById String?  @map("created_by") @db.Uuid
+  updatedById String?  @map("updated_by") @db.Uuid
+
+  vehicles Vehicle[]
+  taxRules TaxRule[]
+
+  @@map("vehicle_categories")
+}
+
+// ---------------------------------------------------------------------
+// Owners & vehicles
+// ---------------------------------------------------------------------
+
+model Owner {
+  id                    String    @id @default(uuid()) @db.Uuid
+  ownerType             OwnerType @map("owner_type")
+  // Individual
+  fullLegalName         String?   @map("full_legal_name") @db.VarChar(200)
+  /// National ID / Fayda reference — stored only where legally permitted.
+  nationalIdRef         String?   @map("national_id_ref") @db.VarChar(50)
+  // Business
+  businessName          String?   @map("business_name") @db.VarChar(200)
+  businessRegNumber     String?   @map("business_reg_number") @db.VarChar(60)
+  authorizedRepName     String?   @map("authorized_rep_name") @db.VarChar(200)
+  authorizedRepPhone    String?   @map("authorized_rep_phone") @db.VarChar(30)
+  // Common
+  /// Lower-cased, accent-folded name for search (maintained by service layer).
+  searchName            String    @map("search_name") @db.VarChar(200)
+  phone                 String?   @db.VarChar(30)
+  email                 String?   @db.VarChar(254)
+  address               String?   @db.VarChar(300)
+  locality              String?   @db.VarChar(120)
+  notes                 String?   @db.VarChar(1000)
+  photoFileId           String?   @unique @map("photo_file_id") @db.Uuid
+  archivedAt            DateTime? @map("archived_at") @db.Timestamptz(3)
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt             DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+  createdById           String?   @map("created_by") @db.Uuid
+  updatedById           String?   @map("updated_by") @db.Uuid
+
+  photo           StoredFile?          @relation("OwnerPhoto", fields: [photoFileId], references: [id])
+  currentVehicles Vehicle[]            @relation("CurrentOwner")
+  ownershipHistory OwnershipRecord[]
+  documents       SupportingDocument[]
+
+  @@index([searchName])
+  @@index([businessRegNumber])
+  @@index([nationalIdRef])
+  @@index([ownerType])
+  @@map("owners")
+}
+
+model Vehicle {
+  id                 String            @id @default(uuid()) @db.Uuid
+  /// Plate as entered/printed (e.g. "3-AA 12345").
+  plateNumber        String            @map("plate_number") @db.VarChar(30)
+  /// Normalized for exact lookup (upper-case, whitespace removed). See @dds/validation normalizePlate().
+  plateNormalized    String            @map("plate_normalized") @db.VarChar(30)
+  previousPlate      String?           @map("previous_plate") @db.VarChar(30)
+  vin                String?           @db.VarChar(40)
+  engineNumber       String?           @map("engine_number") @db.VarChar(40)
+  categoryId         String            @map("category_id") @db.Uuid
+  make               String            @db.VarChar(80)
+  model              String            @db.VarChar(80)
+  manufactureYear    Int?              @map("manufacture_year") @db.SmallInt
+  color              String?           @db.VarChar(40)
+  fuelType           FuelType?         @map("fuel_type")
+  transmission       TransmissionType?
+  usage              VehicleUsage
+  passengerCapacity  Int?              @map("passenger_capacity") @db.SmallInt
+  loadCapacityKg     Decimal?          @map("load_capacity_kg") @db.Decimal(10, 2)
+  currentOwnerId     String            @map("current_owner_id") @db.Uuid
+  officeId           String            @map("office_id") @db.Uuid
+  recordStatus       RecordStatus      @default(ACTIVE) @map("record_status")
+  archivedAt         DateTime?         @map("archived_at") @db.Timestamptz(3)
+  archivedReason     String?           @map("archived_reason") @db.VarChar(500)
+  createdAt          DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt          DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
+  createdById        String?           @map("created_by") @db.Uuid
+  updatedById        String?           @map("updated_by") @db.Uuid
+
+  category      VehicleCategory      @relation(fields: [categoryId], references: [id])
+  currentOwner  Owner                @relation("CurrentOwner", fields: [currentOwnerId], references: [id])
+  office        RegistrationOffice   @relation(fields: [officeId], references: [id])
+  ownership     OwnershipRecord[]
+  registrations Registration[]
+  photos        VehiclePhoto[]
+  documents     SupportingDocument[]
+  assessments   TaxAssessment[]
+  payments      TaxPayment[]
+  inspections   InspectionRecord[]
+  verifications VerificationEvent[]
+  reviews       ReviewRequest[]
+
+  // Partial unique indexes on plate_normalized / vin (WHERE archived_at IS NULL) are in migration 0002.
+  @@index([plateNormalized])
+  @@index([vin])
+  @@index([engineNumber])
+  @@index([categoryId])
+  @@index([currentOwnerId])
+  @@index([officeId])
+  @@index([recordStatus])
+  @@index([createdAt])
+  @@map("vehicles")
+}
+
+/// Ownership history. end_date NULL = current owner.
+/// Exactly one open record per vehicle (partial unique index in migration 0002).
+model OwnershipRecord {
+  id             String    @id @default(uuid()) @db.Uuid
+  vehicleId      String    @map("vehicle_id") @db.Uuid
+  ownerId        String    @map("owner_id") @db.Uuid
+  startDate      DateTime  @map("start_date") @db.Timestamptz(3)
+  endDate        DateTime? @map("end_date") @db.Timestamptz(3)
+  transferReason String?   @map("transfer_reason") @db.VarChar(300)
+  transferRef    String?   @map("transfer_ref") @db.VarChar(80)
+  recordedById   String?   @map("recorded_by") @db.Uuid
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id])
+  owner   Owner   @relation(fields: [ownerId], references: [id])
+
+  @@index([vehicleId, startDate])
+  @@index([ownerId])
+  @@map("ownership_records")
+}
+
+model Registration {
+  id                  String             @id @default(uuid()) @db.Uuid
+  vehicleId           String             @map("vehicle_id") @db.Uuid
+  certificateNumber   String             @unique @map("certificate_number") @db.VarChar(50)
+  officeId            String             @map("office_id") @db.Uuid
+  registeringOfficerId String?           @map("registering_officer_id") @db.Uuid
+  registeredAt        DateTime           @map("registered_at") @db.Timestamptz(3)
+  validFrom           DateTime           @map("valid_from") @db.Timestamptz(3)
+  /// NULL = no expiry configured for this registration type.
+  validUntil          DateTime?          @map("valid_until") @db.Timestamptz(3)
+  status              RegistrationStatus @default(PENDING)
+  notes               String?            @db.VarChar(1000)
+  cancelledAt         DateTime?          @map("cancelled_at") @db.Timestamptz(3)
+  cancelledReason     String?            @map("cancelled_reason") @db.VarChar(500)
+  createdAt           DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt           DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
+  createdById         String?            @map("created_by") @db.Uuid
+  updatedById         String?            @map("updated_by") @db.Uuid
+
+  vehicle Vehicle            @relation(fields: [vehicleId], references: [id])
+  office  RegistrationOffice @relation(fields: [officeId], references: [id])
+
+  @@index([vehicleId, registeredAt])
+  @@index([status])
+  @@index([validUntil])
+  @@index([registeredAt])
+  @@map("registrations")
+}
+
+// ---------------------------------------------------------------------
+// Files (Vercel Private Blob). Only pathnames are stored — never URLs.
+// Access is through short-lived signed URLs minted server-side.
+// ---------------------------------------------------------------------
+
+model StoredFile {
+  id           String    @id @default(uuid()) @db.Uuid
+  pathname     String    @unique @db.VarChar(400)
+  contentType  String    @map("content_type") @db.VarChar(100)
+  sizeBytes    Int       @map("size_bytes")
+  sha256       String    @db.Char(64)
+  originalName String?   @map("original_name") @db.VarChar(255)
+  uploadedById String?   @map("uploaded_by") @db.Uuid
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  /// Soft removal; blob is deleted by a retention job after the retention window.
+  removedAt    DateTime? @map("removed_at") @db.Timestamptz(3)
+  removedById  String?   @map("removed_by") @db.Uuid
+
+  ownerPhoto   Owner?              @relation("OwnerPhoto")
+  vehiclePhoto VehiclePhoto?
+  document     SupportingDocument?
+
+  @@map("stored_files")
+}
+
+model VehiclePhoto {
+  id        String     @id @default(uuid()) @db.Uuid
+  vehicleId String     @map("vehicle_id") @db.Uuid
+  fileId    String     @unique @map("file_id") @db.Uuid
+  angle     PhotoAngle
+  caption   String?    @db.VarChar(200)
+  removedAt DateTime?  @map("removed_at") @db.Timestamptz(3)
+  createdAt DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  createdById String?  @map("created_by") @db.Uuid
+
+  vehicle Vehicle    @relation(fields: [vehicleId], references: [id])
+  file    StoredFile @relation(fields: [fileId], references: [id])
+
+  // One active PRIMARY photo per vehicle: partial unique index in migration 0002.
+  @@index([vehicleId])
+  @@map("vehicle_photos")
+}
+
+model SupportingDocument {
+  id          String       @id @default(uuid()) @db.Uuid
+  vehicleId   String?      @map("vehicle_id") @db.Uuid
+  ownerId     String?      @map("owner_id") @db.Uuid
+  fileId      String       @unique @map("file_id") @db.Uuid
+  docType     DocumentType @map("doc_type")
+  docNumber   String?      @map("doc_number") @db.VarChar(80)
+  issuedAt    DateTime?    @map("issued_at") @db.Date
+  expiresAt   DateTime?    @map("expires_at") @db.Date
+  notes       String?      @db.VarChar(500)
+  removedAt   DateTime?    @map("removed_at") @db.Timestamptz(3)
+  createdAt   DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  createdById String?      @map("created_by") @db.Uuid
+
+  vehicle Vehicle?   @relation(fields: [vehicleId], references: [id])
+  owner   Owner?     @relation(fields: [ownerId], references: [id])
+  file    StoredFile @relation(fields: [fileId], references: [id])
+
+  @@index([vehicleId])
+  @@index([ownerId])
+  @@map("supporting_documents")
+}
+
+model InspectionRecord {
+  id                String           @id @default(uuid()) @db.Uuid
+  vehicleId         String           @map("vehicle_id") @db.Uuid
+  inspectedAt       DateTime         @map("inspected_at") @db.Timestamptz(3)
+  inspectorName     String           @map("inspector_name") @db.VarChar(200)
+  result            InspectionResult
+  certificateNumber String?          @unique @map("certificate_number") @db.VarChar(50)
+  validUntil        DateTime?        @map("valid_until") @db.Date
+  notes             String?          @db.VarChar(1000)
+  createdAt         DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
+  createdById       String?          @map("created_by") @db.Uuid
+  updatedById       String?          @map("updated_by") @db.Uuid
+
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id])
+
+  @@index([vehicleId, inspectedAt])
+  @@map("inspection_records")
+}
+
+// ---------------------------------------------------------------------
+// Annual vehicle tax
+// ---------------------------------------------------------------------
+
+/// Configurable tax rule. No rates are hard-coded anywhere in the codebase.
+/// source = CONFIGURED until an authorized admin cites the official regulation.
+model TaxRule {
+  id              String        @id @default(uuid()) @db.Uuid
+  name            String        @db.VarChar(150)
+  taxYear         Int           @map("tax_year") @db.SmallInt
+  /// NULL = applies to all categories (a category-specific rule takes precedence).
+  categoryId      String?       @map("category_id") @db.Uuid
+  /// NULL = applies to all usages.
+  usage           VehicleUsage?
+  amount          Decimal       @db.Decimal(14, 2)
+  currency        String        @default("ETB") @db.Char(3)
+  /// Payment deadline for the tax year; after it an unpaid balance is OVERDUE.
+  dueDate         DateTime      @map("due_date") @db.Date
+  allowPartial    Boolean       @default(false) @map("allow_partial")
+  source          TaxRuleSource @default(CONFIGURED)
+  /// Required when source = VERIFIED_OFFICIAL (CHECK constraint in migration 0002).
+  legalReference  String?       @map("legal_reference") @db.VarChar(500)
+  /// Informational only — penalties are NOT auto-calculated until officially configured.
+  penaltyNote     String?       @map("penalty_note") @db.VarChar(1000)
+  priority        Int           @default(0)
+  isActive        Boolean       @default(true) @map("is_active")
+  approvedById    String?       @map("approved_by") @db.Uuid
+  approvedAt      DateTime?     @map("approved_at") @db.Timestamptz(3)
+  createdAt       DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
+  createdById     String?       @map("created_by") @db.Uuid
+  updatedById     String?       @map("updated_by") @db.Uuid
+
+  category    VehicleCategory? @relation(fields: [categoryId], references: [id])
+  assessments TaxAssessment[]
+
+  @@index([taxYear, isActive])
+  @@index([categoryId])
+  @@map("tax_rules")
+}
+
+/// What a vehicle owes for one tax year. Status is NOT stored — it is derived
+/// from posted payment allocations + rule (see @dds/domain computeTaxStatus).
+model TaxAssessment {
+  id                String    @id @default(uuid()) @db.Uuid
+  vehicleId         String    @map("vehicle_id") @db.Uuid
+  taxYear           Int       @map("tax_year") @db.SmallInt
+  taxRuleId         String    @map("tax_rule_id") @db.Uuid
+  /// Snapshot of the rule amount at assessment time (rule edits do not rewrite history).
+  amountDue         Decimal   @map("amount_due") @db.Decimal(14, 2)
+  dueDate           DateTime  @map("due_date") @db.Date
+  allowPartial      Boolean   @map("allow_partial")
+  // Exemption / waiver — requires an authorizing officer and a reason (CHECK in 0002).
+  exemptedAt        DateTime? @map("exempted_at") @db.Timestamptz(3)
+  exemptedById      String?   @map("exempted_by") @db.Uuid
+  exemptionReason   String?   @map("exemption_reason") @db.VarChar(500)
+  exemptionRef      String?   @map("exemption_ref") @db.VarChar(80)
+  // Review flag
+  underReview       Boolean   @default(false) @map("under_review")
+  reviewReason      String?   @map("review_reason") @db.VarChar(500)
+  // Cancellation (instead of delete)
+  cancelledAt       DateTime? @map("cancelled_at") @db.Timestamptz(3)
+  cancelledById     String?   @map("cancelled_by") @db.Uuid
+  cancelledReason   String?   @map("cancelled_reason") @db.VarChar(500)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+  createdById       String?   @map("created_by") @db.Uuid
+  updatedById       String?   @map("updated_by") @db.Uuid
+
+  vehicle     Vehicle             @relation(fields: [vehicleId], references: [id])
+  taxRule     TaxRule             @relation(fields: [taxRuleId], references: [id])
+  allocations PaymentAllocation[]
+
+  // One non-cancelled assessment per vehicle per year: partial unique index in 0002.
+  @@index([vehicleId, taxYear])
+  @@index([taxYear])
+  @@index([dueDate])
+  @@map("tax_assessments")
+}
+
+/// Append-only. Corrections are made by REVERSING (status, reversed_* fields) —
+/// never UPDATE of amount or DELETE (DB trigger in migration 0002).
+model TaxPayment {
+  id               String        @id @default(uuid()) @db.Uuid
+  paymentReference String        @unique @map("payment_reference") @db.VarChar(80)
+  vehicleId        String        @map("vehicle_id") @db.Uuid
+  officeId         String        @map("office_id") @db.Uuid
+  amount           Decimal       @db.Decimal(14, 2)
+  currency         String        @default("ETB") @db.Char(3)
+  method           PaymentMethod
+  /// Bank / mobile-money transaction id, if any.
+  externalRef      String?       @map("external_ref") @db.VarChar(120)
+  paidAt           DateTime      @map("paid_at") @db.Timestamptz(3)
+  collectedById    String        @map("collected_by") @db.Uuid
+  status           PaymentStatus @default(POSTED)
+  reversedAt       DateTime?     @map("reversed_at") @db.Timestamptz(3)
+  reversedById     String?       @map("reversed_by") @db.Uuid
+  reversalReason   String?       @map("reversal_reason") @db.VarChar(500)
+  createdAt        DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  vehicle     Vehicle             @relation(fields: [vehicleId], references: [id])
+  office      RegistrationOffice  @relation(fields: [officeId], references: [id])
+  allocations PaymentAllocation[]
+  receipt     TaxReceipt?
+
+  @@index([vehicleId, paidAt])
+  @@index([paidAt])
+  @@index([status])
+  @@index([collectedById])
+  @@map("tax_payments")
+}
+
+model PaymentAllocation {
+  id           String   @id @default(uuid()) @db.Uuid
+  paymentId    String   @map("payment_id") @db.Uuid
+  assessmentId String   @map("assessment_id") @db.Uuid
+  amount       Decimal  @db.Decimal(14, 2)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  payment    TaxPayment    @relation(fields: [paymentId], references: [id])
+  assessment TaxAssessment @relation(fields: [assessmentId], references: [id])
+
+  @@unique([paymentId, assessmentId])
+  @@index([assessmentId])
+  @@map("payment_allocations")
+}
+
+model TaxReceipt {
+  id            String    @id @default(uuid()) @db.Uuid
+  /// Official receipt number, from number_sequences (gap-free, issued in a transaction).
+  receiptNumber String    @unique @map("receipt_number") @db.VarChar(50)
+  paymentId     String    @unique @map("payment_id") @db.Uuid
+  issuedAt      DateTime  @default(now()) @map("issued_at") @db.Timestamptz(3)
+  issuedById    String    @map("issued_by") @db.Uuid
+  voidedAt      DateTime? @map("voided_at") @db.Timestamptz(3)
+  voidedById    String?   @map("voided_by") @db.Uuid
+  voidReason    String?   @map("void_reason") @db.VarChar(500)
+
+  payment TaxPayment @relation(fields: [paymentId], references: [id])
+
+  @@index([issuedAt])
+  @@map("tax_receipts")
+}
+
+/// Gap-free counters (receipt numbers, verification references).
+/// Incremented with SELECT ... FOR UPDATE inside the business transaction.
+model NumberSequence {
+  name      String   @id @db.VarChar(50)
+  prefix    String   @db.VarChar(20)
+  nextValue BigInt   @default(1) @map("next_value")
+  padding   Int      @default(6) @db.SmallInt
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@map("number_sequences")
+}
+
+// ---------------------------------------------------------------------
+// Verification, review, audit
+// ---------------------------------------------------------------------
+
+/// Every plate lookup from the verification portal (append-only).
+model VerificationEvent {
+  id              String   @id @default(uuid()) @db.Uuid
+  /// Printed on the verification report, e.g. VER-2026-000123.
+  reference       String   @unique @db.VarChar(40)
+  officerId       String   @map("officer_id") @db.Uuid
+  plateQuery      String   @map("plate_query") @db.VarChar(40)
+  plateNormalized String   @map("plate_normalized") @db.VarChar(30)
+  vehicleId       String?  @map("vehicle_id") @db.Uuid
+  /// e.g. {VERIFIED,TAX_UNPAID} or {RECORD_NOT_FOUND}
+  statuses        String[]
+  /// Reason entered by the officer (required by setting verify.require_reason).
+  reason          String?  @db.VarChar(300)
+  location        String?  @db.VarChar(200)
+  /// SHA-256 of client IP + daily salt (no raw IPs stored).
+  ipHash          String?  @map("ip_hash") @db.Char(64)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  vehicle Vehicle? @relation(fields: [vehicleId], references: [id])
+
+  @@index([officerId, createdAt])
+  @@index([vehicleId, createdAt])
+  @@index([plateNormalized])
+  @@index([createdAt])
+  @@map("verification_events")
+}
+
+model ReviewRequest {
+  id              String       @id @default(uuid()) @db.Uuid
+  source          ReviewSource
+  plateQuery      String?      @map("plate_query") @db.VarChar(40)
+  vehicleId       String?      @map("vehicle_id") @db.Uuid
+  verificationRef String?      @map("verification_ref") @db.VarChar(40)
+  submittedById   String       @map("submitted_by") @db.Uuid
+  description     String       @db.VarChar(2000)
+  status          ReviewStatus @default(OPEN)
+  assignedToId    String?      @map("assigned_to") @db.Uuid
+  resolvedById    String?      @map("resolved_by") @db.Uuid
+  resolvedAt      DateTime?    @map("resolved_at") @db.Timestamptz(3)
+  resolution      String?      @db.VarChar(2000)
+  createdAt       DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  vehicle Vehicle? @relation(fields: [vehicleId], references: [id])
+
+  @@index([status, createdAt])
+  @@index([vehicleId])
+  @@map("review_requests")
+}
+
+/// Append-only audit trail (UPDATE/DELETE blocked by trigger in migration 0002).
+/// Never store passwords, tokens, or full personal records in metadata.
+model AuditLog {
+  id         BigInt   @id @default(autoincrement())
+  actorId    String?  @map("actor_id") @db.Uuid
+  /// e.g. vehicle.create, owner.view, tax.payment.record, report.export
+  action     String   @db.VarChar(80)
+  entityType String   @map("entity_type") @db.VarChar(50)
+  entityId   String?  @map("entity_id") @db.VarChar(64)
+  portal     Portal
+  ipHash     String?  @map("ip_hash") @db.Char(64)
+  /// Changed field NAMES and non-sensitive values only.
+  metadata   Json?
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([actorId, createdAt])
+  @@index([entityType, entityId])
+  @@index([action, createdAt])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+model SystemSetting {
+  key         String   @id @db.VarChar(80)
+  value       Json
+  description String?  @db.VarChar(500)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  updatedById String?  @map("updated_by") @db.Uuid
+
+  @@map("system_settings")
+}
+
+/// Fixed-window rate limiting stored in Postgres (no extra infrastructure).
+model RateLimitBucket {
+  key         String   @db.VarChar(120)
+  windowStart DateTime @map("window_start") @db.Timestamptz(0)
+  count       Int      @default(0)
+
+  @@id([key, windowStart])
+  @@index([windowStart])
+  @@map("rate_limit_buckets")
+}
