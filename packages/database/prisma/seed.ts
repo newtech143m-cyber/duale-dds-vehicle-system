@@ -72,6 +72,7 @@ async function seedReference() {
     ["files.signedUrlTtlSeconds", 300, "Lifetime of signed photo/document URLs"],
     ["files.retentionDays", 3650, "Days before removed files are purged from storage"],
     ["i18n.defaultLocale", "so", "Default UI language (en, so, am)"],
+    ["auth.mfaEnforced", true, "Require authenticator (TOTP) for admin/supervisor/finance/auditor roles"],
   ];
   for (const [key, value, description] of settings) {
     await prisma.systemSetting.upsert({

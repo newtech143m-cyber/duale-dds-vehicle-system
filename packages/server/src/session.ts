@@ -5,7 +5,7 @@ import { redirect } from "next/navigation";
 import { createServerClient } from "@supabase/ssr";
 import { prisma } from "@dds/database";
 import { effectivePermissions, ForbiddenError, type PermissionCode } from "@dds/auth";
-import { currentPortal } from "./core";
+import { currentPortal, getSetting } from "./core";
 
 export async function createSupabase() {
   const cookieStore = await cookies();
@@ -88,7 +88,10 @@ export const getAuthState = cache(async (): Promise<AuthState> => {
     requiresMfa: user.mfaRequired || assignments.some((a) => a.role.requiresMfa),
   };
 
-  if (staff.requiresMfa) {
+  // MFA can be switched off by the system owner (system_settings "auth.mfaEnforced").
+  // Default when the setting is missing: enforced.
+  const mfaEnforced = await getSetting<boolean>("auth.mfaEnforced", true);
+  if (staff.requiresMfa && mfaEnforced) {
     const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
     if (aal?.currentLevel !== "aal2") {
       const { data: factors } = await supabase.auth.mfa.listFactors();

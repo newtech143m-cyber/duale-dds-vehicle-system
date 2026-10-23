@@ -102,7 +102,7 @@ Each portal is its own Vercel project linked to this repository.
 ### Adding staff
 1. Supabase → Authentication → Users → *Add user* (email + password, auto-confirm).
 2. Registration portal → *Staff & roles* → add the same email with roles.
-3. The account links on first sign-in. Admin, supervisor, finance and auditor roles must enrol an authenticator app (TOTP).
+3. The account links on first sign-in. Admin, supervisor, finance and auditor roles must enrol an authenticator app (TOTP) **when `auth.mfaEnforced` is true** in `system_settings` (currently switched off by the owner; re-enable with `UPDATE system_settings SET value = 'true' WHERE key = 'auth.mfaEnforced';`).
 
 ### Database roles
 Login roles are created outside migrations (passwords never in git):
