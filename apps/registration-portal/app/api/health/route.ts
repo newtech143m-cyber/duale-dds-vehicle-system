@@ -8,7 +8,8 @@ export async function GET() {
   try {
     await prisma.$queryRaw`SELECT 1`;
     return Response.json({ ok: true, db: "up", ms: Date.now() - started }, { headers: { "Cache-Control": "no-store" } });
-  } catch {
+  } catch (e) {
+    console.error("[health] database check failed:", e instanceof Error ? e.message : e);
     return Response.json({ ok: false, db: "down" }, { status: 503, headers: { "Cache-Control": "no-store" } });
   }
 }

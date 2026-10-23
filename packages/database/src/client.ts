@@ -6,17 +6,28 @@ import { PrismaClient } from "./generated/prisma/client";
 //
 // DATABASE_URL = Supabase *transaction* pooler (port 6543) with the portal's own
 // least-privilege login role, e.g.
-//   postgresql://dds_registration_login.<project-ref>:<password>@<pooler-host>:6543/postgres?sslmode=require
-// Transaction pooling + serverless: keep the per-instance pool small.
+//   postgresql://dds_registration_login.<project-ref>:<password>@<pooler-host>:6543/postgres
+//
+// TLS: Supabase signs its pooler certificate with its own CA. Put that CA (PEM,
+// "Download certificate" under Database → SSL configuration) in DATABASE_CA_CERT to
+// get full certificate + hostname verification. Without it, the URL's sslmode applies.
 const globalForPrisma = globalThis as unknown as { __ddsPrisma?: PrismaClient };
 
 function createClient(): PrismaClient {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
+  const raw = process.env.DATABASE_URL;
+  if (!raw) {
     throw new Error("DATABASE_URL is not set");
+  }
+  const ca = process.env.DATABASE_CA_CERT?.replace(/\\n/g, "\n").trim();
+  let connectionString = raw;
+  if (ca) {
+    const url = new URL(raw);
+    url.searchParams.delete("sslmode"); // explicit ssl config below takes over
+    connectionString = url.toString();
   }
   const adapter = new PrismaPg({
     connectionString,
+    ...(ca ? { ssl: { ca, rejectUnauthorized: true } } : {}),
     max: Number(process.env.DATABASE_POOL_MAX ?? 3),
     idleTimeoutMillis: 10_000,
     connectionTimeoutMillis: 10_000,
